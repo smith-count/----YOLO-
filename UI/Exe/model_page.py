@@ -21,7 +21,7 @@ class YOLOAnalyzerApp:
         self.video_writer = None #初始化一个视频写入对象
         self.is_processing = False
         self.model = None
-        self.output_dir = "output"
+        self.output_dir = "../output"
         self.current_frame = None
 
         # 创建输出目录
@@ -37,7 +37,7 @@ class YOLOAnalyzerApp:
     def load_model(self):
         """加载YOLO模型"""
         try:
-            self.model = YOLO(r"D:\Python\graduate_design\Model\yolo11n.pt")
+            self.model = YOLO(r"/Model/yolo11n.pt")
             messagebox.showinfo("模型加载", "YOLO模型加载成功!")
         except Exception as e:
             messagebox.showerror("错误", f"模型加载失败: {str(e)}")
