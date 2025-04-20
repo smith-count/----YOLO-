@@ -1,27 +1,23 @@
 import tkinter as tk
 from tkinter import messagebox
-from traceback import clear_frames
-
 from UI.Exe.model_page import YOLOAnalyzerApp
-
 import mysql.connector
 from mysql.connector import Error
 import hashlib
 from ttkbootstrap import Style
-# from tkinter import ttk
 
 # 界面优化
-
 style = Style(theme='sandstone')
 
+"""数据库管理类"""
 class DatabaseManager:
-    """数据库管理类"""
+
     def __init__(self):
         self.connection = None
         self.connect()
 
+    """连接数据库"""
     def connect(self):
-        """连接数据库"""
         try:
             self.connection = mysql.connector.connect(
                 host='localhost',
@@ -34,10 +30,10 @@ class DatabaseManager:
         except Error as e:
             messagebox.showerror("数据库错误", f"无法连接数据库: {e}")
 
+    """创建用户表(如果不存在)"""
     def create_table(self):
-        """创建用户表(如果不存在)"""
         try:
-            cursor = self.connection.cursor()
+            cursor = self.connection.cursor() #返回控制游标
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -77,7 +73,7 @@ class DatabaseManager:
             cursor = self.connection.cursor()
 
             # 检查用户名是否已存在
-            cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
+            cursor.execute("SELECT username FROM users WHERE username = %s", username)
             if cursor.fetchone():
                 return False, "用户名已存在"
 
@@ -97,11 +93,10 @@ class DatabaseManager:
             if 'cursor' in locals():
                 cursor.close()
 
+    """用户登录验证"""
     def login_user(self, username, password):
-        """用户登录验证"""
         try:
             cursor = self.connection.cursor(dictionary=True)
-
             # 获取用户信息
             cursor.execute("""
                 SELECT id, username, password 
@@ -122,8 +117,8 @@ class DatabaseManager:
         except Error as e:
             return False, f"数据库错误: {e}"
 
+    """关闭数据库连接"""
     def close(self):
-        """关闭数据库连接"""
         if self.connection and self.connection.is_connected():
             self.connection.close()
 
@@ -134,7 +129,7 @@ class LoginApp:
     def __init__(self, root):
         self.root = root
         self.root.title("用户登录系统")
-        self.root.geometry("400x300")
+        self.root.geometry("300x200")
         self.db = DatabaseManager()
 
         # 创建主界面
@@ -185,6 +180,8 @@ class LoginApp:
         """
         self.register_frame = tk.Frame(self.main_frame)
 
+        # 调整界面大小
+        self.root.geometry("450x270")
         # 用户名行
         username_frame = tk.Frame(self.register_frame)
         username_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5)
@@ -301,6 +298,7 @@ class LoginApp:
 
             # 跳转到主界面
             main_app = YOLOAnalyzerApp(self.root)  # 将 root 传递给新类
+            self.root.geometry("750x400")
             self.root.protocol("WM_DELETE_WINDOW", main_app.on_closing)
 
         else:
