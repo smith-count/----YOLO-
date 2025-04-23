@@ -1,7 +1,9 @@
+import csv
 from datetime import datetime
 import zipfile
 import shutil
 import numpy as np
+import pandas as pd
 from ultralytics import YOLO
 from PIL import Image
 from io import BytesIO
@@ -11,6 +13,7 @@ import time
 import cv2
 import streamlit as st
 from util import convert_video_with_ffmpeg
+import plotly.express as px
 
 # ======================
 # 自定义CSS样式
@@ -82,7 +85,61 @@ MODEL_PATHS = {
 current_model = YOLO(r"D:\Python\graduate_design\Model\yolo11n.pt")# 默认
 conf_threshold = 0
 iou_threshold = 0
+detection_data = []
+detections_df = None
+speed_df = None
+flag = False # 用于检测有无图像
+target_class = []
 
+
+def process_yolo_results(results, class_list=None, conf_thres=0.1):
+    global flag
+    # """
+    # 处理YOLO结果并返回可直接显示的图像
+    # :param results: YOLO检测结果(单个Results对象)
+    # :param class_list: 要显示的类别列表
+    # :param conf_thres: 置信度阈值
+    # :return: 可直接显示的numpy数组图像(BGR格式)
+    # """
+    # 1. 结果过滤
+    if class_list is not None:
+        names = results.names
+        keep_idx = [
+            i for i, box in enumerate(results.boxes)
+            if (names[int(box.cls)] in class_list) and (float(box.conf) >= conf_thres)
+        ]
+        results.boxes = results.boxes[keep_idx]
+        if hasattr(results, 'masks') and results.masks is not None:
+            results.masks = results.masks[keep_idx]
+        if hasattr(results, 'keypoints') and results.keypoints is not None:
+            results.keypoints = results.keypoints[keep_idx]
+
+    if len(results.boxes)==0 :
+        flag = False
+    # 2. 安全图像转换
+    plotted_img = results.plot()
+
+    # 处理不同返回类型
+    if isinstance(plotted_img, Image.Image):
+        # PIL.Image转numpy数组
+        img_np = np.array(plotted_img)
+        # 确保是3通道(RGB或BGR)
+        if img_np.ndim == 2:  # 灰度图
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.shape[2] == 4:  # RGBA
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        else:  # RGB
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    else:  # 已经是numpy数组
+        img_np = plotted_img
+        if img_np.ndim == 2:  # 灰度图
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.shape[2] == 4:  # RGBA
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        elif img_np.shape[2] == 3:  # 确保是BGR
+            pass  # 假设已经是BGR
+
+    return img_np
 
 # 加载模型
 def load_model(model_name):
@@ -99,160 +156,182 @@ def load_model(model_name):
         st.error(f"加载模型失败：{e}")
         return None
 
-# # 实时摄像头检测
-# def realtime_detection():
-#     global current_model
-#     st.header("📹 实时摄像头检测")
-#
-#     # 初始化摄像头
-#     camera_placeholder = st.empty()
-#     stop_button = st.button("停止检测")
-#
-#     # 获取摄像头设备（默认0）
-#     cap = cv2.VideoCapture(0)
-#     if not cap.isOpened():
-#         st.error("无法访问摄像头")
-#         return
-#
-#     try:
-#         while cap.isOpened() and not stop_button:
-#             # 读取视频帧
-#             ret, frame = cap.read()
-#             if not ret:
-#                 st.warning("视频流中断")
-#                 break
-#
-#             # YOLO推理
-#             results = current_model.track(
-#                 source=frame,
-#                 conf=conf_threshold,
-#                 iou=iou_threshold,
-#                 persist=True,  # 维持跟踪状态
-#                 verbose=False
-#             )
-#
-#             # 实时标注
-#             annotated_frame = results[0].plot()  # 使用内置绘图方法
-#
-#             # 显示实时画面
-#             camera_placeholder.image(annotated_frame,
-#                                      channels="BGR",
-#                                      caption="实时检测画面")
-#
-#             # 控制帧率（根据硬件调整）
-#             time.sleep(0.01)  # 约100FPS
-#
-#     except Exception as e:
-#         st.error(f"检测异常: {str(e)}")
-#     finally:
-#         cap.release()
-#         st.info("摄像头已释放")
-#
-#
-# def draw_detections(frame, results, class_names) -> np.ndarray:
-#     """在帧上绘制检测框和标签"""
-#     annotated = frame.copy()
-#     color = (0, 255, 0)  # 绿色边框
-#
-#     for result in results:
-#         for box in result.boxes:
-#             # 解析检测结果
-#             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-#             conf = box.conf.item()
-#             cls_id = int(box.cls.item())
-#
-#             # 绘制元素
-#             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-#             label = f"{class_names[cls_id]} {conf:.2f}"
-#             cv2.putText(annotated, label, (x1, y1 - 10),
-#                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
-#
-#     return annotated
+def yolo_results_to_dataframe(results):
+    """
+    将YOLO检测结果转换为结构化DataFrame
+    """
+    global detection_data
+    result = results[0]
 
+    try:
+        for i, box in enumerate(result.boxes, 1):
+            detection_data.append({
+            "序号": i,
+            "类别ID": int(box.cls.item()),
+            "类别名称": result.names[int(box.cls.item())],
+            "置信度": float(box.conf.item()),
+            "x1": round(box.xyxy[0][0].item()),
+            "y1": round(box.xyxy[0][1].item()),
+            "x2": round(box.xyxy[0][2].item()),
+            "y2": round(box.xyxy[0][3].item()),
+            "宽度": round(box.xyxy[0][2].item() - box.xyxy[0][0].item()),
+            "高度": round(box.xyxy[0][3].item() - box.xyxy[0][1].item())
+            })
+    except Exception as e:
+            st.error(f"处理失败: {str(e)}")
+            return
+
+    return pd.DataFrame(detection_data), pd.DataFrame([result.speed])
 # 图片检测
 def image_detection():
     global current_model
+    global detection_data
+    global detections_df
+    global speed_df
+    global flag
+    global iou_threshold
+    global conf_threshold
+
     st.header("图片检测")
-    #st.markdown('<div class="dynamic-border">', unsafe_allow_html=True)
 
     # 上传图片文件
-    uploaded_file = st.file_uploader("上传图片文件", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader("上传图片文件",
+                                   type=["jpg", "jpeg", "png"],
+                                   label_visibility="visible")
 
     if uploaded_file:
+        flag = True
         # 创建两列布局
         col1, col2 = st.columns(2)
 
         # 打开原始图像
         original_image = Image.open(uploaded_file)
+        img_array = np.array(original_image)
+        img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
         # 左侧显示原始图片
         with col1:
             st.subheader("原始图片")
-            st.image(original_image, use_container_width=True)
+            st.image(original_image,  use_container_width=True)
 
         # 右侧显示处理进度和结果
         with col2:
             st.subheader("检测结果")
 
-            # 添加处理中的旋转动画
             with st.spinner("YOLO模型正在处理中..."):
-                # 使用YOLO模型进行推理
-                results = current_model(
-                    source=original_image,
-                    conf=conf_threshold,
-                    iou=iou_threshold,
-                    save=False
-                )
+                try:
+                    # 使用YOLO模型进行推理
+                    results = current_model(
+                        source=img_cv,
+                        conf=conf_threshold,
+                        iou=iou_threshold,
+                        save=False
+                    )
 
-                # 将推理结果绘制到图像上
-                annotated_image = results[0].plot()  # 返回带注释的图像（numpy数组）
-                annotated_image = Image.fromarray(annotated_image[..., ::-1])  # 转换为PIL图像
+                    process_yolo_results(results[0],class_list=target_class,
+                                                    )
+                    annotated_image = results[0].plot()
+                    annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
+                    st.image(annotated_image, use_container_width=True)
 
-                # 显示处理后的图像
-                st.image(annotated_image, use_container_width=True)
+                    # 转换结果为DataFrame
+                    if hasattr(results[0], 'boxes'):
+                        detections_df, speed_df = yolo_results_to_dataframe(results)
 
-                # 显示检测统计信息
-                num_objects = len(results[0].boxes)
-                st.success(f"检测到 {num_objects} 个目标")
+                    # 添加下载功能
+                    buffered = BytesIO()
+                    Image.fromarray(annotated_image).save(buffered, format="JPEG")
+                    st.download_button(
+                        label="📥 导出检测图片",
+                        data=buffered.getvalue(),
+                        file_name=f"detection_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg",
+                        mime="image/jpeg",
+                        type="primary"
+                    )
 
-                # 将处理后的图像转换为字节流供下载
-                buffered = BytesIO()
-                annotated_image.save(buffered, format="JPEG")
-                img_bytes = buffered.getvalue()
+                except Exception as e:
+                    st.error(f"处理失败: {str(e)}")
+                    return
 
-                # 添加右下角下载按钮（使用CSS固定位置）
-                st.markdown(
-                    """
-                    <style>
-                    .download-btn {
-                        position: fixed;
-                        bottom: 20px;
-                        right: 20px;
-                        z-index: 999;
-                    }
-                    </style>
-                    """,
-                    unsafe_allow_html=True
-                )
+        # 下方显示详细数据
+        st.divider()
+        st.subheader("检测数据详情")
 
-                # 导出按钮
-                st.download_button(
-                    label="📥 导出处理后的图片",
-                    data=img_bytes,
-                    file_name="processed_image.jpg",
-                    mime="image/jpeg",
-                    key="download_image",
-                    help="点击下载YOLO处理后的图片",
-                    use_container_width=True,
-                    on_click=lambda: st.toast("图片导出成功！"),
-                    type="primary"
-                )
+        if flag :
+            # 格式化表格
+            display_df = detections_df.copy()
+            display_df['置信度'] = display_df['置信度'].apply(lambda x: f"{x:.2%}")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+            # 交互式表格
+            st.dataframe(
+                display_df[['序号', '类别名称', '置信度', 'x1', 'y1', 'x2', 'y2']],
+                column_config={
+                    "置信度": st.column_config.ProgressColumn(
+                        min_value=0,
+                        max_value=1,
+                        format="%.2f%%"
+                    )
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+
+            # 统计信息
+            col_stat1, col_stat2 = st.columns(2)
+            with col_stat1:
+                st.metric("检测目标总数", len(detections_df))
+            with col_stat2:
+                st.metric("平均置信度", f"{detections_df['置信度'].mean():.2%}")
+
+            # 类别分布
+            st.subheader("类别分布")
+            st.bar_chart(detections_df['类别名称'].value_counts())
+
+            # 处理速度和数据下载
+            with st.expander("高级选项"):
+                tab1, tab2 = st.tabs(["性能指标", "数据导出"])
+                with tab1:
+                    st.dataframe(
+                        speed_df.rename(columns={
+                            'preprocess': '预处理(ms)',
+                            'inference': '推理(ms)',
+                            'postprocess': '后处理(ms)'
+                        }),
+                        use_container_width=True
+                    )
+                with tab2:
+                    st.download_button(
+                        label="📊 导出检测数据(CSV)",
+                        data=detections_df.to_csv(index=False).encode('utf-8'),
+                        file_name="detection_data.csv",
+                        mime="text/csv"
+                    )
+
+        # 控制台输出（调试用）
+        #     print("==== 检测结果 ====")
+        #     print(detections_df[['序号', '类别名称', '置信度', 'x1', 'y1', 'x2', 'y2']].to_string(index=False))
+        #     print("\n==== 处理速度 (ms) ====")
+        #     print(speed_df.to_string(index=False))
+
+
 
 def video_detection():
     global current_model
+    global detection_data
+    global conf_threshold
+    global iou_threshold
     st.header("🎥 视频检测系统")
+
+    # # 在侧边栏添加类别选择功能
+    # with st.sidebar.expander("🔍 检测类别设置", expanded=True):
+    #     # 获取模型支持的类别列表
+    #     class_options = list(current_model.names.values())
+    #     selected_classes = st.multiselect(
+    #         "选择要检测的类别",
+    #         options=class_options,
+    #         default=class_options[:3],  # 默认选择前3个类别
+    #         help="选择需要检测的目标类别"
+    #     )
 
     # 使用容器划分主要功能区域
     upload_container = st.container(border=True)
@@ -293,14 +372,15 @@ def video_detection():
         # 处理结果区域
         processed_video_placeholder = st.empty()
         export_placeholder = st.empty()
+        visualization_placeholder = st.empty()
 
         # 创建输出目录
         output_dir = os.path.join("temp_results", "processed_video")
         os.makedirs(output_dir, exist_ok=True)
-        # 确定输出视频路径
         output_video_name = "output_" + os.path.basename(temp_video_path)
-        processed_temp_video_path = os.path.join(output_dir, "temp_processed_video.avi")  # YOLO 输出临时视频
+        processed_temp_video_path = os.path.join(output_dir, "temp_processed_video.avi")
         final_processed_video_path = os.path.join(output_dir, output_video_name)
+        detection_csv_path = os.path.join(output_dir, "detection_results.csv")
 
         try:
             # 获取视频信息
@@ -313,14 +393,20 @@ def video_detection():
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cap.release()
 
-            # 处理进度和状态管理
-            processed_frames = 0
+            # 初始化检测结果收集
+            frame_timestamps = []
             lock = threading.Lock()
 
             def process_video():
                 nonlocal processed_frames
                 try:
-                    # 模拟 YOLO 推理和保存视频
+                    # 初始化CSV文件
+                    with open(detection_csv_path, mode='w', newline='') as csv_file:
+                        fieldnames = ['frame_num', 'timestamp', 'class', 'confidence', 'x1', 'y1', 'x2', 'y2']
+                        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                        writer.writeheader()
+
+                    # 使用YOLO进行视频检测
                     results = current_model.track(
                         source=temp_video_path,
                         conf=conf_threshold,
@@ -333,23 +419,65 @@ def video_detection():
                         verbose=False
                     )
 
-                    # 手动保存 YOLO 处理后的临时视频
-                    fourcc = cv2.VideoWriter_fourcc(*'XVID')  # 使用 AVI 格式保存临时视频
+                    # 手动保存处理后的视频
+                    fourcc = cv2.VideoWriter_fourcc(*'XVID')
                     out = cv2.VideoWriter(processed_temp_video_path, fourcc, fps, (width, height))
 
-                    for frame_result in results:
-                        processed_frame = frame_result.plot()  # 示例：绘制检测结果到帧
+                    for frame_idx, frame_result in enumerate(results):
+                        # 获取当前帧时间戳（秒）
+                        current_time = frame_idx / fps
+
+                        # 筛选指定类别的检测结果
+                        if target_class:  # 如果用户选择了特定类别
+                            keep_idx = [
+                                i for i, box in enumerate(frame_result.boxes)
+                                if current_model.names[int(box.cls)] in target_class
+                            ]
+                            frame_result.boxes = frame_result.boxes[keep_idx]
+                            if hasattr(frame_result, 'masks') and frame_result.masks is not None:
+                                frame_result.masks = frame_result.masks[keep_idx]
+                            if hasattr(frame_result, 'keypoints') and frame_result.keypoints is not None:
+                                frame_result.keypoints = frame_result.keypoints[keep_idx]
+
+                        # 绘制检测结果到帧
+                        processed_frame = frame_result.plot()
                         out.write(processed_frame)
 
-                        # 更新处理进度（线程安全）
-                        with lock:
-                            processed_frames += 1
+                        # 收集检测数据（只记录选中的类别）
+                        for detection in frame_result.boxes:
+                            class_id = int(detection.cls)
+                            class_name = current_model.names[class_id]
+                            conf = float(detection.conf)
+                            bbox = detection.xyxy[0].tolist()
+
+                            # 线程安全地更新数据
+                            with lock:
+                                detection_data.append({
+                                    'frame_num': frame_idx,
+                                    'timestamp': current_time,
+                                    'class': class_name,
+                                    'confidence': conf,
+                                    'x1': bbox[0],
+                                    'y1': bbox[1],
+                                    'x2': bbox[2],
+                                    'y2': bbox[3]
+                                })
+                                processed_frames = frame_idx + 1
+                                frame_timestamps.append(current_time)
+
+                        # 每处理10帧或结束时保存一次CSV
+                        if frame_idx % 10 == 0 or frame_idx == total_frames - 1:
+                            with lock:
+                                with open(detection_csv_path, mode='a', newline='') as csv_file:
+                                    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                                    writer.writerows(detection_data[-10:])
 
                     out.release()
                 except Exception as e:
                     st.error(f"视频处理内部错误: {str(e)}")
 
             # 启动处理线程
+            processed_frames = 0
             process_thread = threading.Thread(target=process_video)
             process_thread.start()
 
@@ -376,17 +504,82 @@ def video_detection():
                         processed_video_placeholder.markdown("**检测结果预览**")
                         processed_video_placeholder.video(final_processed_video_path)
 
-                        # 导出按钮样式优化
+                        # 导出按钮
                         with export_placeholder:
-                            with open(final_processed_video_path, "rb") as f:
-                                st.download_button(
-                                    label="⬇️ 导出检测结果视频",
-                                    data=f,
-                                    file_name=output_video_name,
-                                    mime="video/mp4",
-                                    use_container_width=True,
-                                    type="primary"
-                                )
+                            col_export1, col_export2 = st.columns(2)
+                            with col_export1:
+                                with open(final_processed_video_path, "rb") as f:
+                                    st.download_button(
+                                        label="⬇️ 导出结果视频",
+                                        data=f,
+                                        file_name=output_video_name,
+                                        mime="video/mp4",
+                                        use_container_width=True,
+                                        type="primary"
+                                    )
+                            with col_export2:
+                                with open(detection_csv_path, "rb") as f:
+                                    st.download_button(
+                                        label="📊 导出检测数据(CSV)",
+                                        data=f,
+                                        file_name="detection_results.csv",
+                                        mime="text/csv",
+                                        use_container_width=True
+                                    )
+
+            # 数据可视化（只显示选中的类别）
+            if os.path.exists(detection_csv_path):
+                with visualization_placeholder.container(border=True):
+                    st.subheader("3. 检测数据分析")
+
+                    # 加载检测数据
+                    df = pd.read_csv(detection_csv_path)
+
+                    # 筛选选中的类别
+                    if target_class:
+                        df = df[df['class'].isin(target_class)]
+
+                    if not df.empty:
+                        # 创建可视化选项卡
+                        tab1, tab2, tab3 = st.tabs(["类别分布", "时间趋势", "空间分布"])
+
+                        with tab1:
+                            st.markdown("**检测类别统计**")
+                            species_counts = df['class'].value_counts().reset_index()
+                            species_counts.columns = ['Class', 'Count']
+                            fig1 = px.bar(species_counts,
+                                          x='Class',
+                                          y='Count',
+                                          color='Class',
+                                          text='Count')
+                            st.plotly_chart(fig1, use_container_width=True)
+
+                        with tab2:
+                            st.markdown("**检测结果时间分布**")
+                            df['time_interval'] = (df['timestamp'] // 5) * 5  # 5秒间隔分组
+                            time_dist = df.groupby(['time_interval', 'class']).size().reset_index(name='count')
+                            fig2 = px.line(time_dist,
+                                           x='time_interval',
+                                           y='count',
+                                           color='class',
+                                           markers=True)
+                            fig2.update_xaxes(title="时间 (秒)")
+                            fig2.update_yaxes(title="检测数量")
+                            st.plotly_chart(fig2, use_container_width=True)
+
+                        with tab3:
+                            st.markdown("**检测目标空间分布**")
+                            fig3 = px.scatter(df,
+                                              x='x1',
+                                              y='y1',
+                                              color='class',
+                                              size='confidence',
+                                              hover_data=['frame_num', 'confidence'])
+                            fig3.update_xaxes(range=[0, width])
+                            fig3.update_yaxes(range=[height, 0])  # 反转Y轴匹配图像坐标
+                            st.plotly_chart(fig3, use_container_width=True)
+                    else:
+                        st.warning("未检测到选定类别的目标")
 
         except Exception as e:
             st.error(f"❌ 处理过程中发生错误: {str(e)}", icon="🚨")
@@ -398,8 +591,72 @@ def video_detection():
             if os.path.exists(processed_temp_video_path):
                 os.remove(processed_temp_video_path)
 
+
+def real_time_detection():
+    """实时目标检测函数"""
+    st.title("实时目标检测")
+    global current_model
+    global conf_threshold
+    global iou_threshold
+
+
+    start_button = st.button("开始检测")
+    stop_button = st.button("停止检测")
+
+    if start_button:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            st.error("无法打开视频源")
+            return
+
+        st_frame = st.empty()  # 用于动态更新画面的占位符
+        stats_placeholder = st.empty()  # 统计信息占位符
+
+        while cap.isOpened() and not stop_button:
+            success, frame = cap.read()
+            if not success:
+                st.warning("视频流结束")
+                break
+
+            # 执行检测
+            start_time = time.time()
+            results = current_model(frame,
+                            conf=conf_threshold,
+                            iou=iou_threshold,
+                            verbose=False)
+
+            # 计算FPS
+            fps = 1 / (time.time() - start_time + 1e-9)
+
+            # 绘制结果
+            annotated_frame = results[0].plot()
+            annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+
+            # 显示统计信息
+            num_objects = len(results[0].boxes)
+            stats_text = f"""
+            **检测统计**  
+            • 目标数量: {num_objects}  
+            • 置信度阈值: {conf_threshold:.2f}  
+            • 实时FPS: {fps:.1f}  
+            """
+
+            # 更新界面
+            st_frame.image(annotated_frame, caption="实时检测画面", use_container_width=True)
+            stats_placeholder.markdown(stats_text)
+
+            # 控制帧率 (默认30FPS)
+            time.sleep(1 / 30)
+
+        cap.release()
+        cv2.destroyAllWindows()
+
 def model_usage():
-    st.title("🦁 智能动物识别系统")
+    global current_model
+    global iou_threshold
+    global conf_threshold
+
+    st.title("🦁 基于YOLO的动物识别系统")
     st.markdown("---")
 
     # 侧边栏配置
@@ -434,133 +691,15 @@ def model_usage():
 
     # 主内容区域
     with st.container():
-        #st.markdown('<div class="main-container">', unsafe_allow_html=True)
 
         if task == "图片检测":
-            with st.container():
-                # st.markdown('<div class="section-card">', unsafe_allow_html=True)
-                st.header("📸 图像检测")
-
-                # 文件上传区域
-                uploaded_file = st.file_uploader(
-                    "上传待检测图片",
-                    type=["jpg", "jpeg", "png"],
-                    help="支持JPG/JPEG/PNG格式，最大尺寸5MB"
-                )
-
-                if uploaded_file:
-                    cols = st.columns([1, 1], gap="large")
-                    with cols[0]:
-                        st.markdown("#### 原始图像")
-                        st.image(uploaded_file, use_container_width=True)
-
-                    with cols[1]:
-                        with st.spinner("🔍 正在检测中..."):
-                            # 模型推理
-                            results = current_model.predict(
-                                source=Image.open(uploaded_file),
-                                conf=conf_threshold,
-                                iou=iou_threshold
-                            )
-                            annotated_image = results[0].plot()[:, :, ::-1]
-
-                            st.markdown("#### 检测结果")
-                            st.image(annotated_image, use_container_width=True)
-
-                            # 结果统计
-                            num_objects = len(results[0].boxes)
-                            st.success(f"✅ 检测到 {num_objects} 个目标")
-
-                            # 导出功能
-                            buf = BytesIO()
-                            Image.fromarray(annotated_image).save(buf, format="PNG")
-                            st.download_button(
-                                label="💾 保存检测结果",
-                                data=buf.getvalue(),
-                                file_name="detection_result.png",
-                                mime="image/png",
-                                use_container_width=True
-                            )
-                st.markdown('</div>', unsafe_allow_html=True)
+            image_detection()
 
         elif task == "视频检测":
-            # with st.container():
-            #     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            #     st.header("🎥 视频检测")
-            #
-            #     # 文件上传区域
-            #     uploaded_file = st.file_uploader(
-            #         "上传待检测视频",
-            #         type=["mp4", "avi"],
-            #         help="支持MP4/AVI格式，最大尺寸500MB"
-            #     )
-            #
-            #     if uploaded_file:
-            #         # 视频预览与处理
-            #         video_path = f"temp_{uploaded_file.name}"
-            #         with open(video_path, "wb") as f:
-            #             f.write(uploaded_file.getbuffer())
-            #
-            #         cols = st.columns([1, 1], gap="large")
-            #         with cols[0]:
-            #             st.markdown("#### 原始视频")
-            #             st.video(uploaded_file)
-            #
-            #         with cols[1]:
-            #             st.markdown("#### 处理进度")
-            #             progress_bar = st.progress(0)
-            #             status_text = st.empty()
-            #
-            #             # 模拟处理过程
-            #             for percent in range(100):
-            #                 time.sleep(0.02)
-            #                 progress_bar.progress(percent + 1)
-            #                 status_text.text(f"▏ 处理进度: {percent + 1}%")
-            #
-            #             st.success("✅ 处理完成！")
-            #             st.download_button(
-            #                 label="📥 下载结果视频",
-            #                 data=open(video_path, "rb"),
-            #                 file_name="processed_video.mp4",
-            #                 use_container_width=True
-            #             )
-            #     st.markdown('</div>', unsafe_allow_html=True)
             video_detection()
 
         elif task == "实时检测":
-            with st.container():
-                #st.markdown('<div class="section-card">', unsafe_allow_html=True)
-                st.header("🌐 实时检测")
-
-                # 摄像头控制
-                if st.button("🚀 启动实时检测", use_container_width=True):
-                    cap = cv2.VideoCapture(0)
-                    frame_placeholder = st.empty()
-                    stop_button = st.button("🛑 停止检测", use_container_width=True)
-
-                    while cap.isOpened() and not stop_button:
-                        ret, frame = cap.read()
-                        if not ret:
-                            st.error("无法获取视频流")
-                            break
-
-                        # 实时推理
-                        results = current_model.track(
-                            frame,
-                            conf=conf_threshold,
-                            iou=iou_threshold
-                        )
-                        annotated_frame = results[0].plot()
-                        frame_placeholder.image(annotated_frame, channels="BGR")
-
-                    cap.release()
-                st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # # 显示示例图片
-    # image = Image.open('D:\Python\graduate_design\img.png')  # 确保 'img.png' 文件存在
-    # st.image(image, caption='demo', use_container_width=True)
+            real_time_detection()
 
 def model_train():
     # 页面设置
@@ -817,16 +956,36 @@ def model_train():
     #             st.warning("没有可用的训练运行")
     #         st.markdown('</div>', unsafe_allow_html=True)
 
-# 主界面
 def main():
-## 边框功能
-    # Streamlit 应用
+    global target_class
+    # 导航菜单
     st.sidebar.markdown('<h1 class="sidebar-title">🧭 导航菜单</h1>', unsafe_allow_html=True)
     page = st.sidebar.radio("",
-                        ["模型选择（已提供）", "模型自定义（训练）"],
-                        index=0,
-                        format_func=lambda x: "🔍 快速检测" if x == "模型选择（已提供）" else "🛠️ 模型训练"
-                        )
+                          ["模型选择（已提供）", "模型自定义（训练）"],
+                          index=0,
+                          format_func=lambda x: "🔍 快速检测" if x == "模型选择（已提供）" else "🛠️ 模型训练"
+                          )
+
+    # 全局设置区域（显示在导航菜单下方）
+    with st.sidebar.expander("⚙️ 检测设置", expanded=True):
+        # 单类/多类识别选择
+        detection_mode = st.radio(
+            "检测模式",
+            ["多类识别", "单类识别"],
+            index=0,
+            help="选择是否只检测特定类别的目标"
+        )
+
+        # 类选择器
+        if detection_mode == "单类识别":
+            # 这里替换为你的实际类别列表
+            class_options = ["cat", "dog", "bird","teddy bear"]
+            target_class = st.selectbox(
+                "选择要识别的目标类别",
+                options=class_options,
+                index=0
+            )
+        else: target_class = ["cat", "dog", "bird","teddy bear"]
 
     if page == "模型选择（已提供）":
         model_usage()
