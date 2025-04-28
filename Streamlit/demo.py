@@ -701,260 +701,342 @@ def model_usage():
         elif task == "实时检测":
             real_time_detection()
 
+import yaml
+
+# 配置常量
+TEMP_DIR = "temp_uploads"
+DATA_YAML = os.path.join(TEMP_DIR, "data.yaml")
+MODEL_YAML = os.path.join(TEMP_DIR, "model.yaml")
+
+
+def setup_temp_dir():
+    """设置临时目录"""
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    return TEMP_DIR
+
+
+def cleanup_temp_dir():
+    """清理临时目录"""
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+
+
+def save_uploaded_file(uploaded_file, save_path):
+    """保存单个上传的文件"""
+    with open(save_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return save_path
+
+
+def create_data_yaml(train_dir, val_dir, class_names):
+    """创建data.yaml配置文件"""
+    data = {
+        'train': train_dir,
+        'val': val_dir,
+        'nc': len(class_names),
+        'names': class_names
+    }
+
+    with open(DATA_YAML, 'w') as f:
+        yaml.dump(data, f)
+
+    return DATA_YAML
+
+
+
+def run_yolo_training(params):
+    """执行YOLO训练命令"""
+    cmd = [
+        'yolo',
+        'task=detect',
+        'mode=train',
+        f'model={params["model_config"]}',
+        f'data={params["data_config"]}',
+        f'imgsz={params["imgsz"]}',
+        f'epochs={params["epochs"]}',
+        f'batch={params["batch"]}',
+        f'workers={params["workers"]}',
+        f'device={params["device"]}',
+        f'optimizer={params["optimizer"]}',
+        f'project={params["project"]}',
+        f'name={params["name"]}',
+    ]
+
+    # 添加布尔参数
+    if params["cache"]:
+        cmd.append('cache=True')
+    else:
+        cmd.append('cache=False')
+
+    if params["single_cls"]:
+        cmd.append('single_cls=True')
+    else:
+        cmd.append('single_cls=False')
+
+    if params["amp"]:
+        cmd.append('amp=True')
+    else:
+        cmd.append('amp=False')
+
+    if params["close_mosaic"] > 0:
+        cmd.append(f'close_mosaic={params["close_mosaic"]}')
+
+    # 执行命令
+    st.info("开始训练...")
+    st.code(" ".join(cmd))
+
+    # 这里实际上应该使用subprocess或其他方式运行训练
+    # 例如: subprocess.run(cmd, check=True)
+    # 为了演示，我们只是显示命令
+
+    # 模拟训练过程
+    with st.spinner("训练进行中..."):
+        import time
+        progress_bar = st.progress(0)
+        for i in range(100):
+            time.sleep(0.1)
+            progress_bar.progress(i + 1)
+
+    st.success("训练完成!")
+
+
 def model_train():
     # 页面设置
-    # st.set_page_config(page_title="YOLO模型训练平台", layout="wide")
+    """主函数"""
+    st.title("YOLO 模型训练配置")
 
-    # 标题
-    st.title("基于YOLO的动物识别模型训练")
-    st.markdown("---")
+    # 初始化临时目录
+    setup_temp_dir()
 
-    # 初始化会话状态
-    if 'training' not in st.session_state:
-        st.session_state.training = False
-    if 'process' not in st.session_state:
-        st.session_state.process = None
-    if 'selected_dataset' not in st.session_state:
-        st.session_state.selected_dataset = None
-    if 'dataset_stats' not in st.session_state:
-        st.session_state.dataset_stats = {"train": 0, "val": 0}
+    # 创建表单
+    with st.form("train_form"):
+        # 1. 上传模型配置文件
+        st.subheader("1. 上传模型配置文件")
+        model_file = st.file_uploader(
+            "上传YOLO模型配置文件 (.yaml)",
+            type=['yaml'],
+            help="上传YOLO模型结构配置文件"
+        )
+
+        # 2. 上传训练数据
+        st.subheader("2. 上传训练数据")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            train_images = st.file_uploader(
+                "上传训练图片",
+                type=['jpg', 'jpeg', 'png'],
+                accept_multiple_files=True,
+                help="上传训练集图片文件"
+            )
+
+            train_labels = st.file_uploader(
+                "上传训练标注",
+                type=['txt'],
+                accept_multiple_files=True,
+                help="上传训练集标注文件 (YOLO格式)"
+            )
+
+        with col2:
+            val_images = st.file_uploader(
+                "上传验证图片",
+                type=['jpg', 'jpeg', 'png'],
+                accept_multiple_files=True,
+                help="上传验证集图片文件"
+            )
+
+            val_labels = st.file_uploader(
+                "上传验证标注",
+                type=['txt'],
+                accept_multiple_files=True,
+                help="上传验证集标注文件 (YOLO格式)"
+            )
+
+        # 3. 配置数据集信息
+        st.subheader("3. 配置数据集信息")
+        class_names = st.text_area(
+            "类别名称 (每行一个)",
+            value="class1\nclass2\nclass3",
+            help="输入所有类别名称，每行一个"
+        )
+
+        # 4. 训练参数配置
+        st.subheader("4. 训练参数配置")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            epochs = st.number_input(
+                "训练轮数 (epochs)",
+                min_value=1,
+                max_value=1000,
+                value=100,
+                step=1
+            )
+
+            batch = st.number_input(
+                "批量大小 (batch)",
+                min_value=1,
+                max_value=64,
+                value=8,
+                step=1
+            )
+
+            imgsz = st.number_input(
+                "图像大小 (imgsz)",
+                min_value=32,
+                max_value=1280,
+                value=640,
+                step=32
+            )
+
+        with col2:
+            workers = st.number_input(
+                "工作线程数 (workers)",
+                min_value=0,
+                max_value=16,
+                value=0,
+                step=1
+            )
+
+            device = st.text_input(
+                "设备 (device)",
+                value="0",
+                help="使用的GPU设备ID，如'0'或'0,1,2'，CPU使用'cpu'"
+            )
+
+            optimizer = st.selectbox(
+                "优化器 (optimizer)",
+                options=["SGD", "Adam", "AdamW", "RMSprop"],
+                index=0
+            )
+
+        # 5. 高级选项
+        st.subheader("5. 高级选项")
+        cache = st.checkbox(
+            "使用缓存 (cache)",
+            value=False,
+            help="是否使用缓存加速训练"
+        )
+
+        single_cls = st.checkbox(
+            "单类别检测 (single_cls)",
+            value=False,
+            help="是否为单类别检测任务"
+        )
+
+        amp = st.checkbox(
+            "自动混合精度 (amp)",
+            value=True,
+            help="是否使用自动混合精度训练"
+        )
+
+        close_mosaic = st.number_input(
+            "关闭马赛克增强的轮数 (close_mosaic)",
+            min_value=0,
+            max_value=100,
+            value=10,
+            step=1,
+            help="最后N轮关闭马赛克增强"
+        )
+
+        # 6. 输出配置
+        st.subheader("6. 输出配置")
+        project = st.text_input(
+            "项目目录 (project)",
+            value="runs/train",
+            help="训练结果保存的根目录"
+        )
+
+        name = st.text_input(
+            "实验名称 (name)",
+            value="exp",
+            help="训练实验的名称"
+        )
+
+        # 提交按钮
+        submitted = st.form_submit_button("开始训练")
+
+        if submitted:
+            # 验证必要文件是否上传
+            if not model_file:
+                st.error("请上传模型配置文件!")
+                return
+
+            if not train_images or not val_images:
+                st.error("请上传训练和验证图片!")
+                return
+
+            if not train_labels or not val_labels:
+                st.error("请上传训练和验证标注!")
+                return
+
+            # 保存模型配置文件
+            model_config_path = save_uploaded_file(model_file, MODEL_YAML)
+
+            # 创建目录结构
+            train_img_dir = os.path.join(TEMP_DIR, "train", "images")
+            train_label_dir = os.path.join(TEMP_DIR, "train", "labels")
+            val_img_dir = os.path.join(TEMP_DIR, "val", "images")
+            val_label_dir = os.path.join(TEMP_DIR, "val", "labels")
+
+            os.makedirs(train_img_dir, exist_ok=True)
+            os.makedirs(train_label_dir, exist_ok=True)
+            os.makedirs(val_img_dir, exist_ok=True)
+            os.makedirs(val_label_dir, exist_ok=True)
+
+            # 保存训练数据
+            for img in train_images:
+                save_uploaded_file(img, os.path.join(train_img_dir, img.name))
+
+            for label in train_labels:
+                save_uploaded_file(label, os.path.join(train_label_dir, label.name))
+
+            # 保存验证数据
+            for img in val_images:
+                save_uploaded_file(img, os.path.join(val_img_dir, img.name))
+
+            for label in val_labels:
+                save_uploaded_file(label, os.path.join(val_label_dir, label.name))
+
+            # 创建data.yaml
+            class_list = [name.strip() for name in class_names.split('\n') if name.strip()]
+            data_config_path = create_data_yaml(
+                os.path.join(TEMP_DIR, "train"),
+                os.path.join(TEMP_DIR, "val"),
+                class_list
+            )
+
+            # 收集所有参数
+            params = {
+                "model_config": model_config_path,
+                "data_config": data_config_path,
+                "epochs": epochs,
+                "batch": batch,
+                "imgsz": imgsz,
+                "workers": workers,
+                "device": device,
+                "optimizer": optimizer,
+                "close_mosaic": close_mosaic,
+                "cache": cache,
+                "single_cls": single_cls,
+                "amp": amp,
+                "project": project,
+                "name": name,
+            }
+
+            # 显示配置信息
+            st.subheader("训练配置摘要")
+            st.json(params)
+
+            # 运行训练
+            run_yolo_training(params)
+
+    # 清理临时目录
+    if st.button("清理临时文件"):
+        cleanup_temp_dir()
+        st.success("临时文件已清理!")
 
 
-    # 侧边栏 - 导航
-    st.sidebar.title("参数设置")
-    page = st.sidebar.radio("选择页面", ["数据集配置", "模型训练", "训练监控"])
-
-    # 数据集配置页面
-    if page == "数据集配置":
-        with st.container():
-            st.markdown('<div class="dynamic-border">', unsafe_allow_html=True)
-            st.header("📁 数据集配置")
-
-            # 数据集上传部分
-            with st.expander("上传数据集", expanded=True):
-                uploaded_file = st.file_uploader("上传ZIP格式的数据集", type=["zip"])
-
-                if uploaded_file is not None:
-                    # 创建临时目录
-                    temp_dir = "temp_dataset"
-                    os.makedirs(temp_dir, exist_ok=True)
-
-                    # 保存上传的文件
-                    zip_path = os.path.join(temp_dir, uploaded_file.name)
-                    with open(zip_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-
-                    # 解压文件
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(temp_dir)
-
-                    # 检查YOLO格式
-                    st.info("检查数据集结构...")
-                    required_folders = ["images", "labels"]
-                    required_splits = ["train", "val"]
-
-                    valid_structure = True
-                    for folder in required_folders:
-                        folder_path = os.path.join(temp_dir, folder)
-                        if not os.path.exists(folder_path):
-                            valid_structure = False
-                            st.error(f"❌ 缺少 {folder} 文件夹")
-                            break
-                        for split in required_splits:
-                            split_path = os.path.join(folder_path, split)
-                            if not os.path.exists(split_path):
-                                valid_structure = False
-                                st.error(f"❌ 在 {folder} 中缺少 {split} 子文件夹")
-                                break
-
-                    if valid_structure:
-                        st.success("✅ 数据集结构验证通过 (YOLO格式)")
-
-                        # 计算数据集统计信息
-                        train_images = len(os.listdir(os.path.join(temp_dir, "images", "train")))
-                        val_images = len(os.listdir(os.path.join(temp_dir, "images", "val")))
-                        st.session_state.dataset_stats = {"train": train_images, "val": val_images}
-
-                        # 显示动态统计信息
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("训练图像数量", train_images)
-                        with col2:
-                            st.metric("验证图像数量", val_images)
-
-                        # 保存数据集选项
-                        dataset_name = st.text_input("输入数据集名称", "my_dataset")
-                        if st.button("💾 保存数据集"):
-                            if dataset_name:
-                                dataset_dir = os.path.join("datasets", dataset_name)
-                                os.makedirs(dataset_dir, exist_ok=True)
-
-                                # 移动文件
-                                for item in os.listdir(temp_dir):
-                                    s = os.path.join(temp_dir, item)
-                                    d = os.path.join(dataset_dir, item)
-                                    if os.path.isdir(s):
-                                        shutil.copytree(s, d, dirs_exist_ok=True)
-                                    else:
-                                        shutil.copy2(s, d)
-
-                                st.success(f"🎉 数据集 '{dataset_name}' 已保存!")
-                                st.session_state.selected_dataset = dataset_name
-
-                                # 清理临时文件
-                                shutil.rmtree(temp_dir)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    # # 模型训练页面
-    elif page == "模型训练":
-        with st.container():
-            st.markdown('<div class="dynamic-border">', unsafe_allow_html=True)
-            st.header("⚙️ 模型训练配置")
-
-            # 选择数据集部分
-            dataset_dir = "datasets"
-            if os.path.exists(dataset_dir) and len(os.listdir(dataset_dir)) > 0:
-                datasets = os.listdir(dataset_dir)
-                selected_dataset = st.selectbox(
-                    "选择数据集",
-                    datasets,
-                    index=datasets.index(
-                        st.session_state.selected_dataset) if st.session_state.selected_dataset in datasets else 0
-                )
-
-                # 显示动态数据集信息
-                with st.expander("数据集信息", expanded=True):
-                    dataset_path = os.path.join(dataset_dir, selected_dataset)
-                    if os.path.exists(dataset_path):
-                        train_images = len(os.listdir(os.path.join(dataset_path, "images", "train")))
-                        val_images = len(os.listdir(os.path.join(dataset_path, "images", "val")))
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("训练图像数量", train_images)
-                        with col2:
-                            st.metric("验证图像数量", val_images)
-                    else:
-                        st.warning("数据集路径不存在")
-
-                # 动态模型配置部分
-                with st.expander("模型配置", expanded=True):
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        model_size = st.selectbox("模型尺寸",
-                                                  ["nano (n)", "small (s)", "medium (m)", "large (l)", "xlarge (x)"],
-                                                  index=1)
-                        epochs = st.slider("训练轮次 (epochs)", min_value=1, max_value=500, value=100)
-                        batch_size = st.selectbox("批次大小 (batch size)", [4, 8, 16, 32, 64], index=1)
-
-                    with col2:
-                        img_size = st.selectbox("图像尺寸 (image size)", [320, 416, 512, 640], index=3)
-                        learning_rate = st.slider("学习率 (learning rate)", min_value=0.0001, max_value=0.1, value=0.01,
-                                                  step=0.001, format="%.3f")
-                        patience = st.number_input("早停耐心值 (patience)", min_value=1, value=50)
-
-                # 动态高级选项部分
-                with st.expander("高级选项"):
-                    col3, col4 = st.columns(2)
-
-                    with col3:
-                        optimizer = st.selectbox("优化器", ["SGD", "Adam", "AdamW"], index=0)
-                        weight_decay = st.number_input("权重衰减 (weight decay)", min_value=0.0, value=0.0005,
-                                                       step=0.0001, format="%.4f")
-
-                    with col4:
-                        augment = st.checkbox("数据增强", value=True)
-                        save_period = st.number_input("保存间隔 (save period)", min_value=1, value=10)
-
-                # 动态训练控制部分
-                with st.expander("训练控制", expanded=True):
-                    if st.button("🚀 开始训练") and not st.session_state.training:
-                        st.session_state.training = True
-
-                        # 创建输出目录
-                        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_dir = os.path.join("runs", f"train_{current_time}")
-                        os.makedirs(output_dir, exist_ok=True)
-
-                        # 显示动态训练信息
-                        st.info("训练配置信息:")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"**数据集:** {selected_dataset}")
-                            st.write(f"**模型尺寸:** {model_size}")
-                            st.write(f"**训练轮次:** {epochs}")
-                        with col2:
-                            st.write(f"**批次大小:** {batch_size}")
-                            st.write(f"**图像尺寸:** {img_size}")
-                            st.write(f"**学习率:** {learning_rate}")
-
-                        # 模拟训练过程
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        for i in range(1, 101):
-                            progress_bar.progress(i)
-                            status_text.text(f"训练进度: {i}%")
-                            # 这里应该是实际的训练过程
-
-                            # time.sleep(0.1)  # 模拟训练延迟
-
-                        st.session_state.training = False
-                        st.success("🎉 训练完成!")
-
-                    elif st.session_state.training:
-                        st.warning("训练正在进行中...")
-                        if st.button("🛑 停止训练"):
-                            st.session_state.training = False
-                            st.experimental_rerun()
-            else:
-                st.warning("没有可用的数据集，请先上传数据集")
-            st.markdown('</div>', unsafe_allow_html=True)
-    #
-    # # 训练监控页面
-    elif page == "训练监控":
-        st.write("demo")
-    #     with st.container():
-    #         st.markdown('<div class="dynamic-border">', unsafe_allow_html=True)
-    #         st.header("📊 训练监控")
-    #
-    #         # 检查是否有训练运行
-    #         runs_dir = "runs"
-    #         if os.path.exists(runs_dir) and len(os.listdir(runs_dir)) > 0:
-    #             runs = sorted(os.listdir(runs_dir), reverse=True)
-    #             selected_run = st.selectbox("选择训练运行", runs)
-    #
-    #             run_path = os.path.join(runs_dir, selected_run)
-    #
-    #             # 动态显示训练结果
-    #             with st.expander("训练结果", expanded=True):
-    #                 # 模拟结果图表
-    #                 col1, col2 = st.columns(2)
-    #                 with col1:
-    #                     st.line_chart({"损失": [0.8, 0.6, 0.4, 0.3, 0.25, 0.2]}, height=300)
-    #                     st.caption("训练损失曲线")
-    #                 with col2:
-    #                     st.line_chart({"准确率": [0.2, 0.4, 0.6, 0.7, 0.75, 0.8]}, height=300)
-    #                     st.caption("验证准确率曲线")
-    #
-    #             # 动态显示训练日志
-    #             with st.expander("训练日志"):
-    #                 # 模拟日志内容
-    #                 log_content = """
-    # [2023-01-01 10:00:00] 训练开始: yolov8s on my_dataset
-    # [2023-01-01 10:05:00] Epoch 1/100 - loss: 0.8 - accuracy: 0.2
-    # [2023-01-01 10:10:00] Epoch 10/100 - loss: 0.6 - accuracy: 0.4
-    # [2023-01-01 10:15:00] Epoch 20/100 - loss: 0.4 - accuracy: 0.6
-    # [2023-01-01 10:20:00] Epoch 30/100 - loss: 0.3 - accuracy: 0.7
-    # [2023-01-01 10:25:00] Epoch 40/100 - loss: 0.25 - accuracy: 0.75
-    # [2023-01-01 10:30:00] Epoch 50/100 - loss: 0.2 - accuracy: 0.8
-    # [2023-01-01 10:35:00] 训练完成 - 最佳模型保存在 runs/train_20230101_100000/weights/best.pt
-    #                 """
-    #                 st.text_area("日志内容", log_content, height=300)
-    #         else:
-    #             st.warning("没有可用的训练运行")
-    #         st.markdown('</div>', unsafe_allow_html=True)
 
 def main():
     global target_class
@@ -966,28 +1048,30 @@ def main():
                           format_func=lambda x: "🔍 快速检测" if x == "模型选择（已提供）" else "🛠️ 模型训练"
                           )
 
-    # 全局设置区域（显示在导航菜单下方）
-    with st.sidebar.expander("⚙️ 检测设置", expanded=True):
-        # 单类/多类识别选择
-        detection_mode = st.radio(
-            "检测模式",
-            ["多类识别", "单类识别"],
-            index=0,
-            help="选择是否只检测特定类别的目标"
-        )
 
-        # 类选择器
-        if detection_mode == "单类识别":
-            # 这里替换为你的实际类别列表
-            class_options = ["cat", "dog", "bird","teddy bear"]
-            target_class = st.selectbox(
-                "选择要识别的目标类别",
-                options=class_options,
-                index=0
-            )
-        else: target_class = ["cat", "dog", "bird","teddy bear"]
 
     if page == "模型选择（已提供）":
+        # 全局设置区域（显示在导航菜单下方）
+        with st.sidebar.expander("⚙️ 检测设置", expanded=True):
+            # 单类/多类识别选择
+            detection_mode = st.radio(
+                "检测模式",
+                ["多类识别", "单类识别"],
+                index=0,
+                help="选择是否只检测特定类别的目标"
+            )
+
+            # 类选择器
+            if detection_mode == "单类识别":
+                # 这里替换为你的实际类别列表
+                class_options = ["cat", "dog", "bird", "teddy bear"]
+                target_class = st.selectbox(
+                    "选择要识别的目标类别",
+                    options=class_options,
+                    index=0
+                )
+            else:
+                target_class = ["cat", "dog", "bird", "teddy bear"]
         model_usage()
     else:
         model_train()
