@@ -1,23 +1,17 @@
 import csv
 from datetime import datetime
-import zipfile
 import shutil
-import numpy as np
 import pandas as pd
 from ultralytics import YOLO
-from PIL import Image
 from io import BytesIO
-import os
 import threading
 import time
-import cv2
 import streamlit as st
-from util import convert_video_with_ffmpeg
+from util import *
 import plotly.express as px
 
-# ======================
+import yaml
 # 自定义CSS样式
-# ======================
 st.markdown("""
 <style>
     /* 主容器样式 */
@@ -75,13 +69,11 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 # 初始化全局变量
 MODEL_PATHS = {
-    "YOLOv11":"D:\Python\graduate_design\Model\yolo11n.pt",
-    "YOLO_detect_animals":r"D:\Python\graduate_design\Model\runs\train\exp\weights\best.pt", #
+    "YOLOv11_Provided":"D:\Python\graduate_design\Model\yolo11n.pt",
+    "YOLO_Animal_Targets":r"D:\Python\graduate_design\Model\runs\train\exp\weights\best.pt", #
 }
-
 current_model = YOLO(r"D:\Python\graduate_design\Model\yolo11n.pt")# 默认
 conf_threshold = 0
 iou_threshold = 0
@@ -90,56 +82,8 @@ detections_df = None
 speed_df = None
 flag = False # 用于检测有无图像
 target_class = []
+detection_mode = None
 
-
-def process_yolo_results(results, class_list=None, conf_thres=0.1):
-    global flag
-    # """
-    # 处理YOLO结果并返回可直接显示的图像
-    # :param results: YOLO检测结果(单个Results对象)
-    # :param class_list: 要显示的类别列表
-    # :param conf_thres: 置信度阈值
-    # :return: 可直接显示的numpy数组图像(BGR格式)
-    # """
-    # 1. 结果过滤
-    if class_list is not None:
-        names = results.names
-        keep_idx = [
-            i for i, box in enumerate(results.boxes)
-            if (names[int(box.cls)] in class_list) and (float(box.conf) >= conf_thres)
-        ]
-        results.boxes = results.boxes[keep_idx]
-        if hasattr(results, 'masks') and results.masks is not None:
-            results.masks = results.masks[keep_idx]
-        if hasattr(results, 'keypoints') and results.keypoints is not None:
-            results.keypoints = results.keypoints[keep_idx]
-
-    if len(results.boxes)==0 :
-        flag = False
-    # 2. 安全图像转换
-    plotted_img = results.plot()
-
-    # 处理不同返回类型
-    if isinstance(plotted_img, Image.Image):
-        # PIL.Image转numpy数组
-        img_np = np.array(plotted_img)
-        # 确保是3通道(RGB或BGR)
-        if img_np.ndim == 2:  # 灰度图
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-        elif img_np.shape[2] == 4:  # RGBA
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
-        else:  # RGB
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-    else:  # 已经是numpy数组
-        img_np = plotted_img
-        if img_np.ndim == 2:  # 灰度图
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-        elif img_np.shape[2] == 4:  # RGBA
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
-        elif img_np.shape[2] == 3:  # 确保是BGR
-            pass  # 假设已经是BGR
-
-    return img_np
 
 # 加载模型
 def load_model(model_name):
@@ -228,8 +172,7 @@ def image_detection():
                         save=False
                     )
 
-                    process_yolo_results(results[0],class_list=target_class,
-                                                    )
+                    process_yolo_results(results[0],class_list=target_class,)
                     annotated_image = results[0].plot()
                     annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
                     st.image(annotated_image, use_container_width=True)
@@ -312,8 +255,6 @@ def image_detection():
         #     print(detections_df[['序号', '类别名称', '置信度', 'x1', 'y1', 'x2', 'y2']].to_string(index=False))
         #     print("\n==== 处理速度 (ms) ====")
         #     print(speed_df.to_string(index=False))
-
-
 
 def video_detection():
     global current_model
@@ -428,7 +369,7 @@ def video_detection():
                         current_time = frame_idx / fps
 
                         # 筛选指定类别的检测结果
-                        if target_class:  # 如果用户选择了特定类别
+                        if detection_mode=="单类识别":  # 如果用户选择了特定类别
                             keep_idx = [
                                 i for i, box in enumerate(frame_result.boxes)
                                 if current_model.names[int(box.cls)] in target_class
@@ -591,65 +532,123 @@ def video_detection():
             if os.path.exists(processed_temp_video_path):
                 os.remove(processed_temp_video_path)
 
-
 def real_time_detection():
-    """实时目标检测函数"""
-    st.title("实时目标检测")
+    """实时目标检测函数 - 优化版"""
+    st.title("📷 实时目标检测")
     global current_model
     global conf_threshold
     global iou_threshold
+    global detection_mode
 
+    # 使用列布局创建控制面板
+    col1, col2 = st.columns([1, 3])
 
-    start_button = st.button("开始检测")
-    stop_button = st.button("停止检测")
+    with col1:
+        st.subheader("控制面板")
+        start_button = st.button("▶️ 开始检测", key="start", help="启动摄像头并开始实时检测")
+        stop_button = st.button("⏹️ 停止检测", key="stop", help="停止检测并关闭摄像头")
+
+        # 显示当前参数设置
+        st.markdown("### 当前参数")
+        st.markdown(f"- 模型: `{current_model.__class__.__name__}`")
+        st.markdown(f"- 置信度阈值: `{conf_threshold:.2f}`")
+        st.markdown(f"- IOU阈值: `{iou_threshold:.2f}`")
+
+        # 性能指标占位符
+        performance_placeholder = st.empty()
+
+    with col2:
+        # 视频流显示区域
+        video_placeholder = st.empty()
+
+        # 检测结果统计区域 - 初始为空，开始检测后才会显示内容
+        stats_placeholder = st.empty()
 
     if start_button:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            st.error("无法打开视频源")
+            st.error("❌ 无法打开视频源，请检查摄像头连接")
             return
 
-        st_frame = st.empty()  # 用于动态更新画面的占位符
-        stats_placeholder = st.empty()  # 统计信息占位符
+        # 初始化性能指标
+        fps_list = []
+        detection_times = []
 
         while cap.isOpened() and not stop_button:
             success, frame = cap.read()
             if not success:
-                st.warning("视频流结束")
+                st.warning("⚠️ 视频流中断")
                 break
 
             # 执行检测
             start_time = time.time()
-            results = current_model(frame,
-                            conf=conf_threshold,
-                            iou=iou_threshold,
-                            verbose=False)
+            results = current_model(
+                frame,
+                conf=conf_threshold,
+                iou=iou_threshold,
+                verbose=False
+            )
+            detection_time = time.time() - start_time
 
             # 计算FPS
-            fps = 1 / (time.time() - start_time + 1e-9)
+            fps = 1 / (detection_time + 1e-9)
+            fps_list.append(fps)
+            detection_times.append(detection_time)
+            avg_fps = sum(fps_list[-10:]) / min(10, len(fps_list))
+            avg_detection_time = sum(detection_times[-10:]) / min(10, len(detection_times))
 
             # 绘制结果
+            process_yolo_results(results[0], class_list=target_class, )
             annotated_frame = results[0].plot()
             annotated_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
 
-            # 显示统计信息
-            num_objects = len(results[0].boxes)
-            stats_text = f"""
-            **检测统计**  
-            • 目标数量: {num_objects}  
-            • 置信度阈值: {conf_threshold:.2f}  
-            • 实时FPS: {fps:.1f}  
-            """
+            # 更新视频流显示
+            video_placeholder.image(
+                annotated_frame,
+                caption="实时检测画面",
+                use_container_width=True,
+                channels="RGB"
+            )
 
-            # 更新界面
-            st_frame.image(annotated_frame, caption="实时检测画面", use_container_width=True)
-            stats_placeholder.markdown(stats_text)
+            # 更新统计信息
+            num_objects = len(results[0].boxes)
+            classes_detected = results[0].boxes.cls.unique().tolist() if num_objects > 0 else []
+
+            with stats_placeholder.container():
+                st.markdown("### 实时统计")
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+
+                with col_stat1:
+                    st.metric("目标数量", num_objects)
+                    st.metric("检测类别数", len(classes_detected))
+
+                with col_stat2:
+                    st.metric("实时FPS", f"{fps:.1f}")
+                    st.metric("平均FPS", f"{avg_fps:.1f}")
+
+                with col_stat3:
+                    st.metric("检测时间", f"{detection_time * 1000:.1f}ms")
+                    st.metric("平均检测时间", f"{avg_detection_time * 1000:.1f}ms")
+
+                # 显示检测到的类别
+                if classes_detected:
+                    st.markdown("**检测到的类别:**")
+                    st.write(", ".join([str(int(cls)) for cls in classes_detected]))
+
+            # 更新性能指标
+            performance_placeholder.markdown("### 性能指标")
+            performance_placeholder.markdown(f"- 最近10帧平均FPS: `{avg_fps:.1f}`")
+            performance_placeholder.markdown(f"- 最近10帧平均检测时间: `{avg_detection_time * 1000:.1f} ms`")
 
             # 控制帧率 (默认30FPS)
-            time.sleep(1 / 30)
+            time.sleep(max(0, 1 / 30 - detection_time))
 
         cap.release()
         cv2.destroyAllWindows()
+        video_placeholder.empty()
+        stats_placeholder.empty()
+        performance_placeholder.empty()
+        st.success("✅ 检测已停止")
 
 def model_usage():
     global current_model
@@ -678,11 +677,11 @@ def model_usage():
         conf_threshold = st.slider("置信度阈值", 0.0, 1.0, 0.25, step=0.01)
         iou_threshold = st.slider("IoU 阈值", 0.0, 1.0, 0.5, step=0.01)
 
-        # 设备设置
-        st.markdown("---")
-        st.markdown("**📷 输入源设置**")
-        camera_devices = ["默认摄像头", "外部设备1", "外部设备2"]
-        selected_camera = st.selectbox("视频输入源", camera_devices)
+        # # 设备设置
+        # st.markdown("---")
+        # st.markdown("**📷 输入源设置**")
+        # camera_devices = ["默认摄像头", "外部设备1", "外部设备2"]
+        # selected_camera = st.selectbox("视频输入源", camera_devices)
 
         # 功能导航
         st.markdown("---")
@@ -701,32 +700,25 @@ def model_usage():
         elif task == "实时检测":
             real_time_detection()
 
-import yaml
-
 # 配置常量
 TEMP_DIR = "temp_uploads"
 DATA_YAML = os.path.join(TEMP_DIR, "data.yaml")
 MODEL_YAML = os.path.join(TEMP_DIR, "model.yaml")
-
-
 def setup_temp_dir():
     """设置临时目录"""
     os.makedirs(TEMP_DIR, exist_ok=True)
     return TEMP_DIR
-
 
 def cleanup_temp_dir():
     """清理临时目录"""
     if os.path.exists(TEMP_DIR):
         shutil.rmtree(TEMP_DIR)
 
-
 def save_uploaded_file(uploaded_file, save_path):
     """保存单个上传的文件"""
     with open(save_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return save_path
-
 
 def create_data_yaml(train_dir, val_dir, class_names):
     """创建data.yaml配置文件"""
@@ -741,8 +733,6 @@ def create_data_yaml(train_dir, val_dir, class_names):
         yaml.dump(data, f)
 
     return DATA_YAML
-
-
 
 def run_yolo_training(params):
     """执行YOLO训练命令"""
@@ -798,7 +788,6 @@ def run_yolo_training(params):
             progress_bar.progress(i + 1)
 
     st.success("训练完成!")
-
 
 def model_train():
     # 页面设置
@@ -1040,6 +1029,7 @@ def model_train():
 
 def main():
     global target_class
+    global detection_mode
     # 导航菜单
     st.sidebar.markdown('<h1 class="sidebar-title">🧭 导航菜单</h1>', unsafe_allow_html=True)
     page = st.sidebar.radio("",
@@ -1064,14 +1054,14 @@ def main():
             # 类选择器
             if detection_mode == "单类识别":
                 # 这里替换为你的实际类别列表
-                class_options = ["cat", "dog", "bird", "teddy bear"]
+                class_options = ["cat", "dog", "bird","sheep","cow", "teddy bear"]
                 target_class = st.selectbox(
                     "选择要识别的目标类别",
                     options=class_options,
                     index=0
                 )
             else:
-                target_class = ["cat", "dog", "bird", "teddy bear"]
+                target_class = ["cat", "dog", "bird","sheep","cow", "teddy bear"]
         model_usage()
     else:
         model_train()

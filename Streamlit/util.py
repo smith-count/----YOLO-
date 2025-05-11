@@ -1,5 +1,8 @@
 import subprocess
 import os
+import cv2
+import numpy as np
+from PIL import Image
 
 def convert_video_with_ffmpeg(input_file, output_file, video_codec='libx264'):
     """
@@ -33,9 +36,59 @@ def convert_video_with_ffmpeg(input_file, output_file, video_codec='libx264'):
     except subprocess.CalledProcessError as e:
         print(f"视频转换失败: {e}")
 
-if __name__ == "__main__":
-    # 示例用法
-    input_mp4_path = r"D:\Python\graduate_design\temp_uploaded_video.mp4"  # 输入 MP4 文件路径
-    output_mp4_path = "output_video_that_streamlit_can_play"  # 输出 MP4 文件路径（无需扩展名，默认 .mp4）
+def process_yolo_results(results, class_list=None, conf_thres=0.1):
+    global flag
+    global detection_mode
+    # 1. 结果过滤
+    if detection_mode == "单类识别":
+        return
+    if class_list is not None:
+        names = results.names
+        keep_idx = [
+            i for i, box in enumerate(results.boxes)
+            if (names[int(box.cls)] in class_list) and (float(box.conf) >= conf_thres)
+        ]
+        results.boxes = results.boxes[keep_idx]
+        if hasattr(results, 'masks') and results.masks is not None:
+            results.masks = results.masks[keep_idx]
+        if hasattr(results, 'keypoints') and results.keypoints is not None:
+            results.keypoints = results.keypoints[keep_idx]
 
-    convert_video_with_ffmpeg(input_mp4_path, output_mp4_path)
+    if len(results.boxes)==0 :
+        flag = False
+    # 2. 安全图像转换
+    plotted_img = results.plot()
+
+    # 处理不同返回类型
+    if isinstance(plotted_img, Image.Image):
+        # PIL.Image转numpy数组
+        img_np = np.array(plotted_img)
+        # 确保是3通道(RGB或BGR)
+        if img_np.ndim == 2:  # 灰度图
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.shape[2] == 4:  # RGBA
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        else:  # RGB
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    else:  # 已经是numpy数组
+        img_np = plotted_img
+        if img_np.ndim == 2:  # 灰度图
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.shape[2] == 4:  # RGBA
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        elif img_np.shape[2] == 3:  # 确保是BGR
+            pass  # 假设已经是BGR
+
+    return img_np
+
+
+
+
+
+
+# if __name__ == "__main__":
+#     # 示例用法
+#     input_mp4_path = r"D:\Python\graduate_design\temp_uploaded_video.mp4"  # 输入 MP4 文件路径
+#     output_mp4_path = "output_video_that_streamlit_can_play"  # 输出 MP4 文件路径（无需扩展名，默认 .mp4）
+#
+#     convert_video_with_ffmpeg(input_mp4_path, output_mp4_path)
