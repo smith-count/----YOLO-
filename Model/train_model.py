@@ -4,7 +4,7 @@ warnings.filterwarnings('ignore')
 from ultralytics import YOLO
 
 if __name__ == '__main__':
-    model = YOLO(r'/Model\dataset\yolo11.yaml')
+    model = YOLO('D:\Python\graduate_design\Model\yolo11n.pt')
     model.train(data=r'D:\Python\graduate_design\Model\dataset\data.yaml',
                 cache=False,
                 imgsz=640,
